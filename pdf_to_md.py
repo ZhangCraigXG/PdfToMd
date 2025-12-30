@@ -15,6 +15,96 @@ def ensure_dir(directory):
     Path(directory).mkdir(parents=True, exist_ok=True)
 
 
+def generate_output_path(input_path):
+    """
+    根据输入路径生成输出根目录路径
+
+    Args:
+        input_path: 输入路径（文件或目录）
+
+    Returns:
+        输出根目录的绝对路径
+    """
+    input_path = os.path.abspath(input_path)
+
+    if os.path.isfile(input_path):
+        # 如果是文件，使用其父目录名
+        parent_dir = os.path.dirname(input_path)
+        parent_name = os.path.basename(parent_dir)
+        output_root = os.path.join(os.path.dirname(parent_dir), f"{parent_name}_format")
+    else:
+        # 如果是目录，使用目录名
+        dir_name = os.path.basename(input_path.rstrip('/'))
+        parent_dir = os.path.dirname(input_path.rstrip('/'))
+        output_root = os.path.join(parent_dir, f"{dir_name}_format")
+
+    return output_root
+
+
+def find_all_pdfs(root_path):
+    """
+    递归扫描目录，查找所有PDF文件
+
+    Args:
+        root_path: 根目录路径
+
+    Returns:
+        排序后的PDF文件绝对路径列表
+    """
+    root_path = Path(root_path)
+
+    if root_path.is_file():
+        # 如果是单个文件，直接返回
+        return [str(root_path.absolute())]
+
+    # 递归查找所有PDF文件
+    pdf_files = []
+    for pdf_file in root_path.rglob('*.pdf'):
+        # 排除隐藏文件
+        if not pdf_file.name.startswith('.'):
+            pdf_files.append(str(pdf_file.absolute()))
+
+    # 按路径排序
+    pdf_files.sort()
+    return pdf_files
+
+
+def calculate_output_paths(pdf_path, input_root, output_root):
+    """
+    计算单个PDF的输出路径（MD文件路径和图片目录路径）
+
+    Args:
+        pdf_path: PDF文件的绝对路径
+        input_root: 输入根目录
+        output_root: 输出根目录
+
+    Returns:
+        (md_output_path, img_output_dir) 元组
+    """
+    pdf_path = os.path.abspath(pdf_path)
+    input_root = os.path.abspath(input_root)
+
+    # 如果input_root是文件，使用其父目录
+    if os.path.isfile(input_root):
+        input_root = os.path.dirname(input_root)
+
+    # 计算相对路径
+    rel_path = os.path.relpath(pdf_path, input_root)
+    rel_dir = os.path.dirname(rel_path)
+    pdf_name = os.path.splitext(os.path.basename(pdf_path))[0]
+
+    # 构建输出路径
+    if rel_dir and rel_dir != '.':
+        output_dir = os.path.join(output_root, rel_dir)
+    else:
+        output_dir = output_root
+
+    md_output_path = os.path.join(output_dir, f"{pdf_name}.md")
+    img_output_dir = os.path.join(output_dir, "assets")
+
+    return md_output_path, img_output_dir
+
+
 def get_page_elements(page, img_output_dir, page_num, pdf_name):
     """
     提取页面中的所有元素（文本块和图片），并按y坐标排序
@@ -141,7 +231,92 @@ def elements_to_markdown(elements, img_folder_name):
     return '\n'.join(markdown_lines)
 
 
-def pdf_to_markdown(pdf_path, md_output_path, img_output_dir):
+def process_single_pdf(pdf_path, md_output_path, img_output_dir, verbose=True):
+    """
+    处理单个PDF文件，包含错误处理
+
+    Args:
+        pdf_path: PDF文件路径
+        md_output_path: Markdown文件保存路径
+        img_output_dir: 图片保存目录
+        verbose: 是否显示详细处理信息
+
+    Returns:
+        处理是否成功（True/False）
+    """
+    try:
+        pdf_to_markdown(pdf_path, md_output_path, img_output_dir, verbose)
+        return True
+    except Exception as e:
+        print(f"错误：处理失败 - {pdf_path}: {e}")
+        return False
+
+
+def process_batch_pdfs(pdf_path_input, verbose=True):
+    """
+    批量处理PDF文件（主控制函数）
+
+    Args:
+        pdf_path_input: PDF路径（可以是文件或目录）
+        verbose: 是否显示详细处理信息
+
+    Returns:
+        处理统计信息字典 {'total': n, 'success': m, 'failed': k, 'failed_files': [...]}
+    """
+    # 检查路径是否存在
+    if not os.path.exists(pdf_path_input):
+        print(f"错误：路径不存在 - {pdf_path_input}")
+        return {'total': 0, 'success': 0, 'failed': 0, 'failed_files': []}
+
+    # 生成输出根目录
+    output_root = generate_output_path(pdf_path_input)
+
+    # 查找所有PDF文件
+    pdf_files = find_all_pdfs(pdf_path_input)
+
+    if not pdf_files:
+        print(f"未找到任何PDF文件：{pdf_path_input}")
+        return {'total': 0, 'success': 0, 'failed': 0, 'failed_files': []}
+
+    print(f"\n找到 {len(pdf_files)} 个PDF文件")
+    print(f"输出目录: {output_root}\n")
+
+    # 统计信息
+    success_count = 0
+    failed_count = 0
+    failed_files = []
+
+    # 处理每个PDF
+    for idx, pdf_path in enumerate(pdf_files, 1):
+        print(f"[{idx}/{len(pdf_files)}] 处理: {os.path.basename(pdf_path)}")
+
+        # 计算输出路径
+        md_output_path, img_output_dir = calculate_output_paths(
+            pdf_path, pdf_path_input, output_root
+        )
+
+        # 处理单个PDF
+        success = process_single_pdf(pdf_path, md_output_path, img_output_dir, verbose=False)
+
+        if success:
+            success_count += 1
+            print(f"  ✓ 成功")
+        else:
+            failed_count += 1
+            failed_files.append(pdf_path)
+            print(f"  ✗ 失败")
+
+        print()  # 空行分隔
+
+    return {
+        'total': len(pdf_files),
+        'success': success_count,
+        'failed': failed_count,
+        'failed_files': failed_files
+    }
+
+
+def pdf_to_markdown(pdf_path, md_output_path, img_output_dir, verbose=True):
     """
     将PDF转换为Markdown文件
 
@@ -149,6 +324,7 @@ def pdf_to_markdown(pdf_path, md_output_path, img_output_dir):
         pdf_path: 源PDF文件路径
         md_output_path: Markdown文件保存路径
         img_output_dir: 图片保存目录
+        verbose: 是否显示详细处理信息
     """
     # 确保输出目录存在
     ensure_dir(os.path.dirname(md_output_path))
@@ -160,7 +336,8 @@ def pdf_to_markdown(pdf_path, md_output_path, img_output_dir):
     # 获取PDF文件名（不含扩展名）
     pdf_name = os.path.splitext(os.path.basename(pdf_path))[0]
 
-    print("正在转换PDF为Markdown并提取图片...")
+    if verbose:
+        print("正在转换PDF为Markdown并提取图片...")
 
     # 打开 PDF
     doc = fitz.open(pdf_path)
@@ -171,7 +348,7 @@ def pdf_to_markdown(pdf_path, md_output_path, img_output_dir):
         page = doc[page_num]
 
         # 显示进度
-        if (page_num + 1) % 10 == 0 or page_num == 0 or page_num == total_pages - 1:
+        if verbose and ((page_num + 1) % 10 == 0 or page_num == 0 or page_num == total_pages - 1):
             print(f"处理页面 {page_num + 1}/{total_pages}...")
 
         # 提取页面元素并排序
@@ -193,20 +370,38 @@ def pdf_to_markdown(pdf_path, md_output_path, img_output_dir):
     with open(md_output_path, "w", encoding="utf-8") as md_file:
         md_file.write(md_text)
 
-    print(f"转换完成！Markdown文件已保存到: {md_output_path}")
-    print(f"图片已保存到: {img_output_dir}")
+    if verbose:
+        print(f"转换完成！Markdown文件已保存到: {md_output_path}")
+        print(f"图片已保存到: {img_output_dir}")
 
 
 if __name__ == "__main__":
-    # 配置路径
-    PDF_PATH = "/Users/craig/Downloads/个人设备.pdf"
-    MD_OUTPUT_PATH = "/Users/craig/Downloads/转换/个人设备.md"
-    IMG_OUTPUT_DIR = "/Users/craig/Downloads/转换/assets/"
+    # ========== 配置区域 ==========
+    # 只需配置这一个路径，可以是文件或目录
+    PDF_PATH = "/Users/craig/Downloads/Notability_副本"
 
-    # 检查PDF文件是否存在
+    # 可选：是否显示详细处理信息（批量处理时建议设为False以减少输出）
+    VERBOSE = True
+    # ========== 配置结束 ==========
+
+    # 检查路径是否存在
     if not os.path.exists(PDF_PATH):
-        print(f"错误：PDF文件不存在 - {PDF_PATH}")
+        print(f"错误：路径不存在 - {PDF_PATH}")
         exit(1)
 
-    # 执行转换
-    pdf_to_markdown(PDF_PATH, MD_OUTPUT_PATH, IMG_OUTPUT_DIR)
+    # 执行批量处理
+    results = process_batch_pdfs(PDF_PATH, verbose=VERBOSE)
+
+    # 输出处理报告
+    print("=" * 50)
+    print("处理完成！")
+    print(f"总计: {results['total']} 个PDF文件")
+    print(f"成功: {results['success']} 个")
+    print(f"失败: {results['failed']} 个")
+
+    if results['failed_files']:
+        print("\n失败的文件：")
+        for file in results['failed_files']:
+            print(f"  - {file}")
+
+    print("=" * 50)
